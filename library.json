@@ -1,14 +1,14 @@
 {
-    "name": "EspSoftwareSerial",
+    "name": "EspBitBanger",
     "version": "7.0.0",
-    "description": "Implementation of the Arduino software serial for ESP8266/ESP32.",
+    "description": "BitBanger based on espsoftwareserial.",
     "keywords": [
-        "serial", "io", "softwareserial"
+        "serial", "io", "softwareserial", "bitbanger"
     ],
     "repository":
     {
         "type": "git",
-        "url": "https://github.com/plerup/espsoftwareserial"
+        "url": "https://github.com/wladimir-computin/espBitBanger"
     },
     "authors": [
         {
@@ -16,6 +16,9 @@
         },
         {
             "name": "Peter Lerup"
+        },
+        {
+            "name": "David Wischnjak"
         }
     ],
     "license": "LGPL-2.1+",

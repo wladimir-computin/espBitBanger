@@ -1,6 +1,9 @@
 /*
 
-SoftwareSerial.cpp - Implementation of the Arduino software serial for ESP8266/ESP32.
+EspBitBanger.cpp - Implementation of a bit banger for proprietary serial protocols.
+Copyright (c) 2023 David Wischnjak.
+
+Based upon EspSoftwareSerial by:
 Copyright (c) 2015-2016 Peter Lerup. All rights reserved.
 Copyright (c) 2018-2019 Dirk O. Kaar. All rights reserved.
 
@@ -20,16 +23,16 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 */
 
-#include "SoftwareSerial.h"
+#include "EspBitBanger.h"
 #include <Arduino.h>
 
 #ifndef ESP32
-uint32_t SoftwareSerial::m_savedPS = 0;
+uint32_t EspBitBanger::m_savedPS = 0;
 #else
-portMUX_TYPE SoftwareSerial::m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE EspBitBanger::m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
-inline void IRAM_ATTR SoftwareSerial::disableInterrupts()
+inline void IRAM_ATTR EspBitBanger::disableInterrupts()
 {
 #ifndef ESP32
     m_savedPS = xt_rsil(15);
@@ -38,7 +41,7 @@ inline void IRAM_ATTR SoftwareSerial::disableInterrupts()
 #endif
 }
 
-inline void IRAM_ATTR SoftwareSerial::restoreInterrupts()
+inline void IRAM_ATTR EspBitBanger::restoreInterrupts()
 {
 #ifndef ESP32
     xt_wsr_ps(m_savedPS);
@@ -49,27 +52,26 @@ inline void IRAM_ATTR SoftwareSerial::restoreInterrupts()
 
 constexpr uint8_t BYTE_ALL_BITS_SET = ~static_cast<uint8_t>(0);
 
-SoftwareSerial::SoftwareSerial() {
+EspBitBanger::EspBitBanger() {
     m_isrOverflow = false;
     m_rxGPIOPullUpEnabled = true;
     m_txGPIOOpenDrain = false;
 }
 
-SoftwareSerial::SoftwareSerial(int8_t rxPin, int8_t txPin, bool invert)
+EspBitBanger::EspBitBanger(int8_t rxPin, int8_t txPin)
 {
     m_isrOverflow = false;
     m_rxGPIOPullUpEnabled = true;
     m_txGPIOOpenDrain = false;
     m_rxPin = rxPin;
     m_txPin = txPin;
-    m_invert = invert;
 }
 
-SoftwareSerial::~SoftwareSerial() {
+EspBitBanger::~EspBitBanger() {
     end();
 }
 
-constexpr bool SoftwareSerial::isValidGPIOpin(int8_t pin) {
+constexpr bool EspBitBanger::isValidGPIOpin(int8_t pin) {
 #if defined(ESP8266)
     return (pin >= 0 && pin <= 16) && !isFlashInterfacePin(pin);
 #elif defined(ESP32)
@@ -78,7 +80,7 @@ constexpr bool SoftwareSerial::isValidGPIOpin(int8_t pin) {
 #ifdef CONFIG_IDF_TARGET_ESP32
     // Datasheet https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf,
     // Pinout    https://docs.espressif.com/projects/esp-idf/en/latest/esp32/_images/esp32-devkitC-v4-pinout.jpg
-    return (pin == 1) || (pin >= 3 && pin <= 5) ||
+    return (pin == 1) || (pin == 2) || (pin >= 3 && pin <= 5) ||
         (pin >= 12 && pin <= 15) ||
         (!psramFound() && pin >= 16 && pin <= 17) ||
         (pin >= 18 && pin <= 19) ||
@@ -99,7 +101,7 @@ constexpr bool SoftwareSerial::isValidGPIOpin(int8_t pin) {
 #endif
 }
 
-constexpr bool SoftwareSerial::isValidRxGPIOpin(int8_t pin) {
+constexpr bool EspBitBanger::isValidRxGPIOpin(int8_t pin) {
     return isValidGPIOpin(pin)
 #if defined(ESP8266)
         && (pin != 16)
@@ -107,7 +109,7 @@ constexpr bool SoftwareSerial::isValidRxGPIOpin(int8_t pin) {
         ;
 }
 
-constexpr bool SoftwareSerial::isValidTxGPIOpin(int8_t pin) {
+constexpr bool EspBitBanger::isValidTxGPIOpin(int8_t pin) {
     return isValidGPIOpin(pin)
 #if defined(ESP32)
 #ifdef CONFIG_IDF_TARGET_ESP32
@@ -121,7 +123,7 @@ constexpr bool SoftwareSerial::isValidTxGPIOpin(int8_t pin) {
         ;
 }
 
-constexpr bool SoftwareSerial::hasRxGPIOPullUp(int8_t pin) {
+constexpr bool EspBitBanger::hasRxGPIOPullUp(int8_t pin) {
 #if defined(ESP32)
     return !(pin >= 34 && pin <= 39);
 #else
@@ -130,43 +132,33 @@ constexpr bool SoftwareSerial::hasRxGPIOPullUp(int8_t pin) {
 #endif
 }
 
-void SoftwareSerial::setRxGPIOPinMode() {
+void EspBitBanger::setRxGPIOPinMode() {
     if (m_rxValid) {
         pinMode(m_rxPin, hasRxGPIOPullUp(m_rxPin) && m_rxGPIOPullUpEnabled ? INPUT_PULLUP : INPUT);
     }
 }
 
-void SoftwareSerial::setTxGPIOPinMode() {
+void EspBitBanger::setTxGPIOPinMode() {
     if (m_txValid) {
         pinMode(m_txPin, m_txGPIOOpenDrain ? OUTPUT_OPEN_DRAIN : OUTPUT);
     }
 }
 
-void SoftwareSerial::begin(uint32_t baud, SoftwareSerialConfig config,
-    int8_t rxPin, int8_t txPin,
-    bool invert, int bufCapacity, int isrBufCapacity) {
+void EspBitBanger::begin(uint32_t baud, int8_t rxPin, int8_t txPin, BitBangerBitOrder bitOrder, bool invert, int bufCapacity, int isrBufCapacity) {
     if (-1 != rxPin) m_rxPin = rxPin;
     if (-1 != txPin) m_txPin = txPin;
-    m_oneWire = (m_rxPin == m_txPin);
+    m_bitOrder = bitOrder;
     m_invert = invert;
-    m_dataBits = 5 + (config & 07);
-    m_parityMode = static_cast<SoftwareSerialParity>(config & 070);
-    m_stopBits = 1 + ((config & 0300) ? 1 : 0);
-    m_pduBits = m_dataBits + static_cast<bool>(m_parityMode) + m_stopBits;
+    m_oneWire = (m_rxPin == m_txPin);
+    m_pduBits = m_dataBits;
     m_bitTicks = (microsToTicks(1000000UL) + baud / 2) / baud;
     m_intTxEnabled = true;
     if (isValidRxGPIOpin(m_rxPin)) {
         m_rxReg = portInputRegister(digitalPinToPort(m_rxPin));
         m_rxBitMask = digitalPinToBitMask(m_rxPin);
         m_buffer.reset(new circular_queue<uint8_t>((bufCapacity > 0) ? bufCapacity : 64));
-        if (m_parityMode)
-        {
-            m_parityBuffer.reset(new circular_queue<uint8_t>((m_buffer->capacity() + 7) / 8));
-            m_parityInPos = m_parityOutPos = 1;
-        }
-        m_isrBuffer.reset(new circular_queue<uint32_t, SoftwareSerial*>((isrBufCapacity > 0) ?
-            isrBufCapacity : m_buffer->capacity() * (2 + m_dataBits + static_cast<bool>(m_parityMode))));
-        if (m_buffer && (!m_parityMode || m_parityBuffer) && m_isrBuffer) {
+        m_isrBuffer.reset(new circular_queue<uint32_t, EspBitBanger*>((isrBufCapacity > 0) ? isrBufCapacity : m_buffer->capacity() * m_dataBits));
+        if (m_buffer && m_isrBuffer) {
             m_rxValid = true;
             setRxGPIOPinMode();
         }
@@ -179,30 +171,29 @@ void SoftwareSerial::begin(uint32_t baud, SoftwareSerialConfig config,
         m_txValid = true;
         if (!m_oneWire) {
             setTxGPIOPinMode();
-            digitalWrite(m_txPin, !m_invert);
+            digitalWrite(m_txPin, 0);
         }
     }
     enableRx(true);
 }
 
-void SoftwareSerial::end()
+void EspBitBanger::end()
 {
     enableRx(false);
     m_txValid = false;
     if (m_buffer) {
         m_buffer.reset();
     }
-    m_parityBuffer.reset();
     if (m_isrBuffer) {
         m_isrBuffer.reset();
     }
 }
 
-uint32_t SoftwareSerial::baudRate() {
+uint32_t EspBitBanger::baudRate() {
     return 1000000UL / ticksToMicros(m_bitTicks);
 }
 
-void SoftwareSerial::setTransmitEnablePin(int8_t txEnablePin) {
+void EspBitBanger::setTransmitEnablePin(int8_t txEnablePin) {
     if (isValidTxGPIOpin(txEnablePin)) {
         m_txEnableValid = true;
         m_txEnablePin = txEnablePin;
@@ -214,26 +205,26 @@ void SoftwareSerial::setTransmitEnablePin(int8_t txEnablePin) {
     }
 }
 
-void SoftwareSerial::enableIntTx(bool on) {
+void EspBitBanger::enableIntTx(bool on) {
     m_intTxEnabled = on;
 }
 
-void SoftwareSerial::enableRxGPIOPullUp(bool on) {
+void EspBitBanger::enableRxGPIOPullUp(bool on) {
     m_rxGPIOPullUpEnabled = on;
     setRxGPIOPinMode();
 }
 
-void SoftwareSerial::enableTxGPIOOpenDrain(bool on) {
+void EspBitBanger::enableTxGPIOOpenDrain(bool on) {
     m_txGPIOOpenDrain = on;
     setTxGPIOPinMode();
 }
 
-void SoftwareSerial::enableTx(bool on) {
+void EspBitBanger::enableTx(bool on) {
     if (m_txValid && m_oneWire) {
         if (on) {
             enableRx(false);
             setTxGPIOPinMode();
-            digitalWrite(m_txPin, !m_invert);
+            digitalWrite(m_txPin, 0);
         }
         else {
             setRxGPIOPinMode();
@@ -242,16 +233,16 @@ void SoftwareSerial::enableTx(bool on) {
     }
 }
 
-void SoftwareSerial::enableRx(bool on) {
+void EspBitBanger::enableRx(bool on) {
     if (m_rxValid && on != m_rxEnabled) {
         if (on) {
             m_rxLastBit = m_pduBits - 1;
             // Init to stop bit level and current tick
-            m_isrLastTick = (microsToTicks(micros()) | 1) ^ m_invert;
+            m_isrLastTick = (microsToTicks(micros()) | 1);
             if (m_bitTicks >= microsToTicks(1000000UL / 74880UL))
                 attachInterruptArg(digitalPinToInterrupt(m_rxPin), reinterpret_cast<void (*)(void*)>(rxBitISR), this, CHANGE);
             else
-                attachInterruptArg(digitalPinToInterrupt(m_rxPin), reinterpret_cast<void (*)(void*)>(rxBitSyncISR), this, m_invert ? RISING : FALLING);
+                attachInterruptArg(digitalPinToInterrupt(m_rxPin), reinterpret_cast<void (*)(void*)>(rxBitSyncISR), this, FALLING);
         }
         else {
             detachInterrupt(digitalPinToInterrupt(m_rxPin));
@@ -260,27 +251,17 @@ void SoftwareSerial::enableRx(bool on) {
     }
 }
 
-int SoftwareSerial::read() {
+int EspBitBanger::read() {
     if (!m_rxValid) { return -1; }
     if (!m_buffer->available()) {
         rxBits();
         if (!m_buffer->available()) { return -1; }
     }
     auto val = m_buffer->pop();
-    if (m_parityBuffer)
-    {
-        m_lastReadParity = m_parityBuffer->peek() & m_parityOutPos;
-        m_parityOutPos <<= 1;
-        if (!m_parityOutPos)
-        {
-            m_parityOutPos = 1;
-            m_parityBuffer->pop();
-        }
-    }
     return val;
 }
 
-int SoftwareSerial::read(uint8_t* buffer, size_t size) {
+int EspBitBanger::read(uint8_t* buffer, size_t size) {
     if (!m_rxValid) { return 0; }
     int avail;
     if (0 == (avail = m_buffer->pop_n(buffer, size))) {
@@ -288,16 +269,10 @@ int SoftwareSerial::read(uint8_t* buffer, size_t size) {
         avail = m_buffer->pop_n(buffer, size);
     }
     if (!avail) return 0;
-    if (m_parityBuffer) {
-        uint32_t parityBits = avail;
-        while (m_parityOutPos >>= 1) ++parityBits;
-        m_parityOutPos = (1 << (parityBits % 8));
-        m_parityBuffer->pop_n(nullptr, parityBits / 8);
-    }
     return avail;
 }
 
-size_t SoftwareSerial::readBytes(uint8_t* buffer, size_t size) {
+size_t EspBitBanger::readBytes(uint8_t* buffer, size_t size) {
     if (!m_rxValid || !size) { return 0; }
     size_t count = 0;
     auto start = millis();
@@ -315,7 +290,7 @@ size_t SoftwareSerial::readBytes(uint8_t* buffer, size_t size) {
     return count;
 }
 
-int SoftwareSerial::available() {
+int EspBitBanger::available() {
     if (!m_rxValid) { return 0; }
     rxBits();
     int avail = m_buffer->available();
@@ -325,7 +300,7 @@ int SoftwareSerial::available() {
     return avail;
 }
 
-void SoftwareSerial::lazyDelay() {
+void EspBitBanger::lazyDelay() {
     // Reenable interrupts while delaying to avoid other tasks piling up
     if (!m_intTxEnabled) { restoreInterrupts(); }
     const auto expired = microsToTicks(micros()) - m_periodStart;
@@ -345,7 +320,7 @@ void SoftwareSerial::lazyDelay() {
     if (!m_intTxEnabled) { disableInterrupts(); }
 }
 
-void IRAM_ATTR SoftwareSerial::preciseDelay() {
+void IRAM_ATTR EspBitBanger::preciseDelay() {
     uint32_t ticks;
     do {
         ticks = microsToTicks(micros());
@@ -354,11 +329,8 @@ void IRAM_ATTR SoftwareSerial::preciseDelay() {
     m_periodStart = ticks;
 }
 
-void IRAM_ATTR SoftwareSerial::writePeriod(
-    uint32_t dutyCycle, uint32_t offCycle, bool withStopBit) {
-    preciseDelay();
-    if (dutyCycle)
-    {
+void IRAM_ATTR EspBitBanger::writeBit(bool bit, uint32_t duration) {
+    if (bit) {
 #if defined(ESP8266)
         if (16 == m_txPin) {
             GP16O = 1;
@@ -369,18 +341,7 @@ void IRAM_ATTR SoftwareSerial::writePeriod(
 #else
         *m_txReg |= m_txBitMask;
 #endif
-        m_periodDuration += dutyCycle;
-        if (offCycle || (withStopBit && !m_invert)) {
-            if (!withStopBit || m_invert) {
-                preciseDelay();
-            }
-            else {
-                lazyDelay();
-            }
-        }
-    }
-    if (offCycle)
-    {
+    } else {
 #if defined(ESP8266)
         if (16 == m_txPin) {
             GP16O = 0;
@@ -391,101 +352,50 @@ void IRAM_ATTR SoftwareSerial::writePeriod(
 #else
         *m_txReg &= ~m_txBitMask;
 #endif
-        m_periodDuration += offCycle;
-        if (withStopBit && m_invert) lazyDelay();
+        
     }
+    m_periodDuration += duration;
+    preciseDelay();
 }
 
-size_t SoftwareSerial::write(uint8_t byte) {
+size_t EspBitBanger::write(uint8_t byte) {
     return write(&byte, 1);
 }
 
-size_t SoftwareSerial::write(uint8_t byte, SoftwareSerialParity parity) {
-    return write(&byte, 1, parity);
-}
-
-size_t SoftwareSerial::write(const uint8_t* buffer, size_t size) {
-    return write(buffer, size, m_parityMode);
-}
-
-size_t IRAM_ATTR SoftwareSerial::write(const uint8_t* buffer, size_t size, SoftwareSerialParity parity) {
+size_t IRAM_ATTR EspBitBanger::write(const uint8_t* buffer, size_t size) {
     if (m_rxValid) { rxBits(); }
-    if (!m_txValid) { return -1; }
-
-    if (m_txEnableValid) {
-        digitalWrite(m_txEnablePin, HIGH);
-    }
-    // Stop bit: if inverted, LOW, otherwise HIGH
-    bool b = !m_invert;
-    uint32_t dutyCycle = 0;
-    uint32_t offCycle = 0;
+    if (!m_txValid) {return -1;}
+    
+    uint32_t duration = 0;
     if (!m_intTxEnabled) {
         // Disable interrupts in order to get a clean transmit timing
         disableInterrupts();
     }
-    const uint32_t dataMask = ((1UL << m_dataBits) - 1);
-    bool withStopBit = true;
     m_periodDuration = 0;
     m_periodStart = microsToTicks(micros());
+    bool b = digitalRead(m_txPin);
+    bool pb;
     for (size_t cnt = 0; cnt < size; ++cnt) {
-        uint8_t byte = pgm_read_byte(buffer + cnt) & dataMask;
-        // push LSB start-data-parity-stop bit pattern into uint32_t
-        // Stop bits: HIGH
-        uint32_t word = ~0UL;
-        // inverted parity bit, performance tweak for xor all-bits-set word
-        if (parity && m_parityMode)
-        {
-            uint32_t parityBit;
-            switch (parity)
-            {
-            case SWSERIAL_PARITY_EVEN:
-                // from inverted, so use odd parity
-                parityBit = byte;
-                parityBit ^= parityBit >> 4;
-                parityBit &= 0xf;
-                parityBit = (0x9669 >> parityBit) & 1;
-                break;
-            case SWSERIAL_PARITY_ODD:
-                // from inverted, so use even parity
-                parityBit = byte;
-                parityBit ^= parityBit >> 4;
-                parityBit &= 0xf;
-                parityBit = (0x6996 >> parityBit) & 1;
-                break;
-            case SWSERIAL_PARITY_MARK:
-                parityBit = 0;
-                break;
-            case SWSERIAL_PARITY_SPACE:
-                // suppresses warning parityBit uninitialized
-            default:
-                parityBit = 1;
-                break;
-            }
-            word ^= parityBit;
+        uint8_t byte = pgm_read_byte(buffer + cnt);
+        if(m_invert){
+            byte = ~byte;
         }
-        word <<= m_dataBits;
-        word |= byte;
-        // Start bit: LOW
-        word <<= 1;
-        if (m_invert) word = ~word;
-        for (int i = 0; i <= m_pduBits; ++i) {
-            bool pb = b;
-            b = word & (1UL << i);
-            if (!pb && b) {
-                writePeriod(dutyCycle, offCycle, withStopBit);
-                withStopBit = false;
-                dutyCycle = offCycle = 0;
+        for (int i = 0; i < m_pduBits; ++i) {
+            pb = b;
+            if(m_bitOrder == MSB_FIRST){
+                b = (byte << i) & 0b10000000;
+            } else {
+                b = (byte >> i) & 0b00000001;
             }
-            if (b) {
-                dutyCycle += m_bitTicks;
+            if (b != pb) {
+                writeBit(pb, duration);
+                duration = 0;
             }
-            else {
-                offCycle += m_bitTicks;
-            }
+            duration += m_bitTicks;
         }
-        withStopBit = true;
     }
-    writePeriod(dutyCycle, offCycle, true);
+    writeBit(b, duration);
+    duration = 0;
     if (!m_intTxEnabled) {
         // restore the interrupt state if applicable
         restoreInterrupts();
@@ -496,34 +406,28 @@ size_t IRAM_ATTR SoftwareSerial::write(const uint8_t* buffer, size_t size, Softw
     return size;
 }
 
-void SoftwareSerial::flush() {
+void EspBitBanger::flush() {
     if (!m_rxValid) { return; }
     m_buffer->flush();
-    if (m_parityBuffer)
-    {
-        m_parityInPos = m_parityOutPos = 1;
-        m_parityBuffer->flush();
-    }
 }
 
-bool SoftwareSerial::overflow() {
+bool EspBitBanger::overflow() {
     bool res = m_overflow;
     m_overflow = false;
     return res;
 }
 
-int SoftwareSerial::peek() {
+int EspBitBanger::peek() {
     if (!m_rxValid) { return -1; }
     if (!m_buffer->available()) {
         rxBits();
         if (!m_buffer->available()) return -1;
     }
     auto val = m_buffer->peek();
-    if (m_parityBuffer) m_lastReadParity = m_parityBuffer->peek() & m_parityOutPos;
     return val;
 }
 
-void SoftwareSerial::rxBits() {
+void EspBitBanger::rxBits() {
 #ifdef ESP8266
     if (m_isrOverflow.load()) {
         m_overflow = true;
@@ -536,23 +440,10 @@ void SoftwareSerial::rxBits() {
 #endif
 
     m_isrBuffer->for_each(m_isrBufferForEachDel);
-
-    // A stop bit can go undetected if leading data bits are at same level
-    // and there was also no next start bit yet, so one word may be pending.
-    // Check that there was no new ISR data received in the meantime, inserting an
-    // extraneous stop level bit out of sequence breaks rx.
-    if (m_rxLastBit < m_pduBits - 1) {
-        const uint32_t detectionTicks = (m_pduBits - 1 - m_rxLastBit) * m_bitTicks;
-        if (!m_isrBuffer->available() && microsToTicks(micros()) - m_isrLastTick > detectionTicks) {
-            // Produce faux stop bit level, prevents start bit maldetection
-            // tick's LSB is repurposed for the level bit
-            rxBits(((m_isrLastTick + detectionTicks) | 1) ^ m_invert);
-        }
-    }
 }
 
-void SoftwareSerial::rxBits(const uint32_t isrTick) {
-    const bool level = (m_isrLastTick & 1) ^ m_invert;
+void EspBitBanger::rxBits(const uint32_t isrTick) {
+    const bool level = (m_isrLastTick & 1);
 
     // error introduced by edge value in LSB of isrTick is negligible
     uint32_t ticks = isrTick - m_isrLastTick;
@@ -563,11 +454,7 @@ void SoftwareSerial::rxBits(const uint32_t isrTick) {
     while (bits > 0) {
         // start bit detection
         if (m_rxLastBit >= (m_pduBits - 1)) {
-            // leading edge of start bit?
-            if (level) break;
             m_rxLastBit = -1;
-            --bits;
-            continue;
         }
         // data bits
         if (m_rxLastBit < (m_dataBits - 1)) {
@@ -575,51 +462,27 @@ void SoftwareSerial::rxBits(const uint32_t isrTick) {
             m_rxLastBit += dataBits;
             bits -= dataBits;
             m_rxCurByte >>= dataBits;
-            if (level) { m_rxCurByte |= (BYTE_ALL_BITS_SET << (8 - dataBits)); }
-            continue;
-        }
-        // parity bit
-        if (m_parityMode && m_rxLastBit == (m_dataBits - 1)) {
-            ++m_rxLastBit;
-            --bits;
-            m_rxCurParity = level;
+            if (level){
+                m_rxCurByte |= (BYTE_ALL_BITS_SET << (8 - dataBits));
+            }
             continue;
         }
         // stop bits
         // Store the received value in the buffer unless we have an overflow
-        // if not high stop bit level, discard word
-        if (bits >= static_cast<uint32_t>(m_pduBits - 1 - m_rxLastBit) && level) {
+        if (bits >= static_cast<uint32_t>(m_pduBits - 1 - m_rxLastBit)) {
             m_rxCurByte >>= (sizeof(uint8_t) * 8 - m_dataBits);
             if (!m_buffer->push(m_rxCurByte)) {
                 m_overflow = true;
-            }
-            else {
-                if (m_parityBuffer)
-                {
-                    if (m_rxCurParity) {
-                        m_parityBuffer->pushpeek() |= m_parityInPos;
-                    }
-                    else {
-                        m_parityBuffer->pushpeek() &= ~m_parityInPos;
-                    }
-                    m_parityInPos <<= 1;
-                    if (!m_parityInPos)
-                    {
-                        m_parityBuffer->push();
-                        m_parityInPos = 1;
-                    }
-                }
             }
         }
         m_rxLastBit = m_pduBits - 1;
         // reset to 0 is important for masked bit logic
         m_rxCurByte = 0;
-        m_rxCurParity = false;
         break;
     }
 }
 
-void IRAM_ATTR SoftwareSerial::rxBitISR(SoftwareSerial* self) {
+void IRAM_ATTR EspBitBanger::rxBitISR(EspBitBanger* self) {
     const bool level = *self->m_rxReg & self->m_rxBitMask;
     const uint32_t curTick = microsToTicks(micros());
     const bool empty = !self->m_isrBuffer->available();
@@ -631,8 +494,8 @@ void IRAM_ATTR SoftwareSerial::rxBitISR(SoftwareSerial* self) {
     if (empty && self->m_rxHandler) self->m_rxHandler();
 }
 
-void IRAM_ATTR SoftwareSerial::rxBitSyncISR(SoftwareSerial* self) {
-    bool level = self->m_invert;
+void IRAM_ATTR EspBitBanger::rxBitSyncISR(EspBitBanger* self) {
+    bool level = 0;
     const uint32_t start = microsToTicks(micros());
     uint32_t wait = self->m_bitTicks - microsToTicks(2U);
     const bool empty = !self->m_isrBuffer->available();
@@ -657,7 +520,7 @@ void IRAM_ATTR SoftwareSerial::rxBitSyncISR(SoftwareSerial* self) {
     if (empty && self->m_rxHandler) self->m_rxHandler();
 }
 
-void SoftwareSerial::onReceive(Delegate<void(), void*> handler) {
+void EspBitBanger::onReceive(Delegate<void(), void*> handler) {
     m_rxHandler = handler;
 }
 
