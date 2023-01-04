@@ -1,13 +1,13 @@
 #######################################
-# Syntax Coloring Map for SoftwareSerial
-# (esp8266)
+# Syntax Coloring Map for EspBitBanger
+# (esp8266/esp32)
 #######################################
 
 #######################################
 # Datatypes (KEYWORD1)
 #######################################
 
-SoftwareSerial	KEYWORD1
+EspBitBanger	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -35,8 +35,5 @@ onReceive	KEYWORD2
 # Constants (LITERAL1)
 #######################################
 
-SW_SERIAL_UNUSED_PIN	LITERAL1
-SWSERIAL_5N1	LITERAL1
-SWSERIAL_6N1	LITERAL1
-SWSERIAL_7N1	LITERAL1
-SWSERIAL_8N1	LITERAL1
+MSB_FIRST	LITERAL1
+LSB_FIRST	LITERAL1
